@@ -159,7 +159,7 @@ while True :
                 symbol = pair
                 amount = 12
 
-            if symbol != '' :
+            if symbol != 'KCS/USDT' :
                     symbol = symbol.replace("-", "/" )
                     print(f"{str(datetime.now()).split('.')[0]} | Tentative de snipping sur {symbol} avec {amount} USDT")
                     telegram_send(f"{str(datetime.now()).split('.')[0]} | Tentative de snipping sur {symbol} avec {amount} USDT")
