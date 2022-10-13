@@ -35,7 +35,7 @@ class SpotKucoin():
     #Cette fonction permet d'obtenir le prix actuel d'une crypto sur Kucoin       
     def get_price(self,pair):
         return self._session.fetch_ticker(pair)['close']
-
+ 
     def authentication_required(fn):
         """Annotation for methods that require auth."""
         def wrapped(self, *args, **kwargs):
