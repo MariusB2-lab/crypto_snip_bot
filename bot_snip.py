@@ -12,6 +12,11 @@ from datetime import datetime
 ##telegram 
 import requests
 import threading
+##
+#Code créé par Moutonneux : https://github.com/titouannwtt/bot-sniping-kucoin/
+#Pensez à utiliser mon lien d'affiliation lors de votre inscription sur Kucoin : 
+#https://www.kucoin.com/ucenter/signup?rcode=rPMCW4T    <-----   ou directement code parainage : rPMCW4T
+
 
 
 class SpotKucoin():
@@ -87,7 +92,9 @@ def telegram_send( message):
                     bot_chatID = ""
                     send_text = 'https://api.telegram.org/bot' + bot_token + '/sendMessage?chat_id=' + bot_chatID + '&parse_mode=Markdown&text=' + message
                     threading.Thread(target=requests.get, args=(send_text,)).start()
-
+# -1001814193151
+#USDT qu'on veut utiliser
+#amount = 12
 
 #Cette fonction permet d'obtenir le prix actuel d'une crypto sur Kucoin
 def getCurrentPrice(perpSymbol) :
@@ -98,13 +105,22 @@ def getCurrentPrice(perpSymbol) :
         print("An error occured", err)
     return float(ticker["ask"])
 
+#Cette fonction récupère le montant d'USDT de votre compte
+def getSolde():
+    global kucoin2
+    try:
+        for coin in kucoin2.fetchBalance()['info']['data'] :
+            if coin['currency']=='USDT' :
+                return float(coin['balance'])
+    except Exception as err:
+        raise err
+
 kucoin2 = ccxt.kucoin({
             "apiKey": "",
             "secret": "",
             "password": ""
             })
 
-amount = 12
 
 kucoin = SpotKucoin(
     apiKey="",
@@ -130,13 +146,10 @@ def trailing_stop(symbol):
             print(f"Close : {close_price} ATH : {ath} Trailing_stop : {trailing_stop} Executed")            
             break
         
-        print(f"Close : {close_price} ATH : {ath} Trailing_stop : {trailing_stop} ")                         
+        print(f"Close : {close_price} ATH : {ath} Trailing_stop : {trailing_stop} ")        
+        telegram_send(f"Close : {close_price} ATH : {ath} Trailing_stop : {trailing_stop} ")                 
         time.sleep(1)
-                    
-
-nbDePairesExecutionsPrecedentes=0
-telegram_send(f"✳️ Bot de sniping lancé avec {amount} USDT, en attente dachat...")
-print(f"✳️ Bot de sniping lancé avec {amount} USDT, en attente dachat...")
+        
 
 while True :
 
@@ -151,25 +164,24 @@ while True :
 
         #On créer une liste avec le nom de paires
         perpListBase = []
-
         for index, row in df.iterrows():
             perpListBase.append(row['symbol'])
-            symbol=''
+             
             for pair in perpListBase :  
-                symbol = pair
-                amount = 12
+                pairs='TRIBL-USDT'
+                pairs = pairs.replace("-", "/" )
 
-            if symbol != 'KCS/USDT' :
-                    symbol = symbol.replace("-", "/" )
+                symbol = pairs
+                amount = 12
+                if symbol != '' :
                     print(f"{str(datetime.now()).split('.')[0]} | Tentative de snipping sur {symbol} avec {amount} USDT")
-                    telegram_send(f"{str(datetime.now()).split('.')[0]} | Tentative de snipping sur {symbol} avec {amount} USDT")
+                    
                     amount = amount/getCurrentPrice(symbol)*1.30 #0.95
                     seconds_before_sell = 10
 
                     while True:
                         try:
                             kucoin.reload_markets()
-                            symbol = symbol.replace("-", "/" )
                             kucoin.place_market_order(symbol, "buy", amount)
                             print(f"{str(datetime.now()).split('.')[0]} | Buy {symbol} Order success!")
                             telegram_send(f"{str(datetime.now()).split('.')[0]} |✅ Buy {symbol} Order success!")
@@ -180,7 +192,6 @@ while True :
                             #achat avec 1% TL
                             trailing_stop(symbol)
 
-                            symbol = symbol.replace("-", "/" )
                             kucoin.place_market_order(symbol, "sell", amount)
                             print(f"{str(datetime.now()).split('.')[0]} | Sell {symbol} Order success!")
                             telegram_send(f"{str(datetime.now()).split('.')[0]} |✅ 💯 Sell {symbol} Order success!")
@@ -197,16 +208,12 @@ while True :
                     print(f"{str(datetime.now()).split('.')[0]} | Sniping réalisé sur {symbol}")
                     telegram_send(f"Sniping réalisé sur {symbol}")
                     del symbol
-            else :  
-                #Pour afficher un message toutes les heures dans la console:
-                now = datetime.now()
-                minute0=int(now.strftime("%M"))+int(now.strftime("%S"))
-                if minute0==0:
-                    print(f"{str(datetime.now()).split('.')[0]} | Bot-snip toujours en cours d'execution ")
-                    pass
-
-    except Exception as err :
-        print(err)
-        time.sleep(20)
+                    break
+                break
+            break
+        break
+    except Exception as err:
+        print(f"{err}")
+        if str(err) == "kucoin does not have market symbol " + symbol:
+            time.sleep(0.1)
         pass
-    break
