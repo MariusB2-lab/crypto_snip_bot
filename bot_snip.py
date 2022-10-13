@@ -92,9 +92,6 @@ def telegram_send( message):
                     bot_chatID = ""
                     send_text = 'https://api.telegram.org/bot' + bot_token + '/sendMessage?chat_id=' + bot_chatID + '&parse_mode=Markdown&text=' + message
                     threading.Thread(target=requests.get, args=(send_text,)).start()
-# -1001814193151
-#USDT qu'on veut utiliser
-#amount = 12
 
 #Cette fonction permet d'obtenir le prix actuel d'une crypto sur Kucoin
 def getCurrentPrice(perpSymbol) :
