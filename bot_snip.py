@@ -35,7 +35,7 @@ class SpotKucoin():
     #Cette fonction permet d'obtenir le prix actuel d'une crypto sur Kucoin       
     def get_price(self,pair):
         return self._session.fetch_ticker(pair)['close']
- 
+
     def authentication_required(fn):
         """Annotation for methods that require auth."""
         def wrapped(self, *args, **kwargs):
@@ -151,15 +151,15 @@ while True :
 
         #On créer une liste avec le nom de paires
         perpListBase = []
+
         for index, row in df.iterrows():
             perpListBase.append(row['symbol'])
-             
+            symbol=''
             for pair in perpListBase :  
-                pairs='KLCS-USDT'
-
-                symbol = pairs
+                symbol = pair
                 amount = 12
-                if symbol != '' :
+
+            if symbol != '' :
                     symbol = symbol.replace("-", "/" )
                     print(f"{str(datetime.now()).split('.')[0]} | Tentative de snipping sur {symbol} avec {amount} USDT")
                     telegram_send(f"{str(datetime.now()).split('.')[0]} | Tentative de snipping sur {symbol} avec {amount} USDT")
@@ -197,13 +197,16 @@ while True :
                     print(f"{str(datetime.now()).split('.')[0]} | Sniping réalisé sur {symbol}")
                     telegram_send(f"Sniping réalisé sur {symbol}")
                     del symbol
-                    break
-                break
-            break
-        break
-    except Exception as err:
-        print(f"{err}")
-        if str(err) == "kucoin does not have market symbol " + symbol:
-            time.sleep(0.1)
+            else :  
+                #Pour afficher un message toutes les heures dans la console:
+                now = datetime.now()
+                minute0=int(now.strftime("%M"))+int(now.strftime("%S"))
+                if minute0==0:
+                    print(f"{str(datetime.now()).split('.')[0]} | Bot-snip toujours en cours d'execution : Aucune nouvelle paire : {len(perpListBase)} paires disponibles")
+                    pass
+
+    except Exception as err :
+        print(err)
+        time.sleep(20)
         pass
- 
+
