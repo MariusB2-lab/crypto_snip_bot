@@ -18,7 +18,7 @@ Ce projet est un bot de trading automatisé utilisant l'API de l'échange MEXC. 
 
 1. Clonez ce dépôt :
     ```bash
-    git clone [https://github.com/votre-utilisateur/votre-repo.git](https://github.com/MariusB2-lab/crypto_snip_bot.git)
+    git clone [(https://github.com/MariusB2-lab/crypto_snip_bot.git]
     cd crypto_snip_bot
     ```
 
