@@ -29,7 +29,6 @@ Ce projet est un bot de trading automatisé utilisant l'API de l'échange MEXC. 
 
 3. Configurez les informations d'authentification dans le fichier `config.json` :
     ```python
-{
     "usdt_amount": 12,
     "fee_percentage": 0.001,
     "telegram_poll_interval": 10,
@@ -40,7 +39,6 @@ Ce projet est un bot de trading automatisé utilisant l'API de l'échange MEXC. 
     },
     "bot_token": "votre_bot_token",
     "bot_chatID": "votre_chat_id"
-}
     ```
 
 ## Utilisation
