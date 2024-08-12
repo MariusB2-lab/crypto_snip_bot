@@ -27,14 +27,20 @@ Ce projet est un bot de trading automatisé utilisant l'API de l'échange MEXC. 
     pip install -r requirements.txt
     ```
 
-3. Configurez les informations d'authentification dans le fichier `config.py` :
+3. Configurez les informations d'authentification dans le fichier `config.json` :
     ```python
-    exchange_auth = {
-        'apiKey': 'votre_api_key',
-        'secret': 'votre_secret_key'
-    }
-    bot_token = 'votre_bot_token'
-    bot_chatID = 'votre_chat_id'
+{
+    "usdt_amount": 12,
+    "fee_percentage": 0.001,
+    "telegram_poll_interval": 10,
+    "main_loop_interval": 10,
+    "exchange_auth": {
+        "apiKey": "votre_api_key",
+        "secret": "votre_secret"
+    },
+    "bot_token": "votre_bot_token",
+    "bot_chatID": "votre_chat_id"
+}
     ```
 
 ## Utilisation
