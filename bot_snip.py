@@ -5,11 +5,17 @@ import requests
 import time
 from datetime import datetime
 import threading
-from config import exchange_auth, bot_token, bot_chatID
 import os
 from functools import wraps
-import signal
 import sys
+
+# Charger les configurations depuis config.json
+with open('config.json', 'r') as f:
+    config = json.load(f)
+
+exchange_auth = config['exchange_auth']
+bot_token = config['bot_token']
+bot_chatID = config['bot_chatID']
 
 # Initialiser la variable de la paire à trader
 current_pair = ''
@@ -301,25 +307,87 @@ def listen_telegram():
             return message_text
     return None
 
+# Variables globales pour contrôler l'état du bot
+is_paused = False
+previous_state = None  # Variable pour suivre l'état précédent du bot
+
+# Variable pour suivre l'état du clavier
+keyboard_sent = False
+
+# Variables pour suivre l'état des messages
+last_change_pair_error_sent = False
+last_pause_message_sent = False
+last_resume_message_sent = False
+
+# Fonction pour envoyer le clavier personnalisé
+def send_telegram_keyboard():
+    global keyboard_sent
+    if not keyboard_sent:
+        keyboard = {
+            "keyboard": [
+                ["/pause", "/resume", "/change_paire"]
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": True
+        }
+        send_text = f'https://api.telegram.org/bot{bot_token}/sendMessage?chat_id={bot_chatID}&text=Commandes disponibles&reply_markup={json.dumps(keyboard)}'
+        requests.get(send_text)
+        keyboard_sent = True
+
+# Appeler la fonction pour envoyer le clavier personnalisé au démarrage du bot
+send_telegram_keyboard()
+
 # Fonction pour traiter les commandes Telegram
 def process_telegram_commands():
-    global current_pair, can_send_bid_ask_error
+    global current_pair, can_send_bid_ask_error, is_paused, previous_state, keyboard_sent
+    global last_change_pair_error_sent, last_pause_message_sent, last_resume_message_sent
+
     new_pair = listen_telegram()
-    if new_pair and new_pair.startswith("/change_paire"):
-        parts = new_pair.split()
-        if len(parts) == 2:
-            _, new_pair_value = parts
-            if not open_position:
-                current_pair = new_pair_value
-                logging.info(f"Paire changée à {current_pair} via Telegram.")
-                telegram_send(f"Paire changée à {current_pair} via Telegram.")
-                can_send_bid_ask_error = True  # Réactiver l'envoi des messages d'erreur
+    if new_pair:
+        if new_pair.startswith("/change_paire"):
+            parts = new_pair.split()
+            if len(parts) == 2:
+                _, new_pair_value = parts
+                if not open_position:
+                    if new_pair_value in traded_pairs_session:  # Vérification si la paire a déjà été tradée
+                        logging.info(f"La paire {new_pair_value} a déjà été tradée. Ignorer cette paire.")
+                        return  # Ignorer le message si la paire a déjà été tradée
+                    current_pair = new_pair_value
+                    logging.info(f"Paire changée à {current_pair} via Telegram.")
+                    telegram_send(f"Paire changée à {current_pair} via Telegram.")
+                    last_change_pair_error_sent = False  # Réinitialiser l'état du message d'erreur
+                    
+                    # Vérification si la paire est dans traded_pairs
+                    if current_pair not in traded_pairs:
+                        logging.warning(f"La paire {current_pair} n'est pas dans traded_pairs.")
+                        telegram_send(f"Alerte : La paire {current_pair} n'est pas dans la liste des paires tradées.")
+                else:
+                    logging.info("Impossible de changer la paire, un trade est en cours.")
+                    if not last_change_pair_error_sent:  # Vérifier si le message a déjà été envoyé
+                        telegram_send("Impossible de changer la paire, un trade est en cours.")
+                        last_change_pair_error_sent = True  # Marquer le message comme envoyé
             else:
-                logging.info("Impossible de changer la paire, un trade est en cours.")
-                telegram_send("Impossible de changer la paire, un trade est en cours.")
-        else:
-            logging.error("Commande /change_paire mal formée. Format attendu: /change_paire <paire>")
-            telegram_send("Commande /change_paire mal formée. Format attendu: /change_paire <paire>")
+                logging.error("Commande /change_paire mal formée. Format attendu: /change_paire BTC/USDT")
+                if not last_change_pair_error_sent:  # Vérifier si le message a déjà été envoyé
+                    telegram_send("Commande /change_paire mal formée. Format attendu: /change_paire BTC/USDT")
+                    last_change_pair_error_sent = True  # Marquer le message comme envoyé
+        elif new_pair == "/pause":
+            if not is_paused:  # Vérifier si le bot n'est pas déjà en pause
+                is_paused = True
+                logging.info("Bot mis en pause via Telegram.")
+                if not last_pause_message_sent:  # Vérifier si le message a déjà été envoyé
+                    telegram_send("Bot mis en pause.")
+                    last_pause_message_sent = True  # Marquer le message comme envoyé
+        elif new_pair == "/resume":
+            if is_paused:  # Vérifier si le bot est en pause
+                is_paused = False
+                logging.info("Bot relancé via Telegram.")
+                if not last_resume_message_sent:  # Vérifier si le message a déjà été envoyé
+                    telegram_send("Bot relancé.")
+                    last_resume_message_sent = True  # Marquer le message comme envoyé
+                keyboard_sent = False  # Réinitialiser l'état du clavier
+        # Envoyer le clavier personnalisé après avoir traité une commande
+        send_telegram_keyboard()
 
 # Ajouter une variable pour contrôler l'envoi des messages d'erreur
 can_send_bid_ask_error = True
@@ -329,6 +397,17 @@ while True:
     try:
         # Traiter les commandes Telegram
         process_telegram_commands()
+
+        # Vérifier si le bot est en pause
+        if is_paused:
+            if previous_state != "paused":
+                logging.info("Bot en pause. En attente de la commande /resume...")
+                previous_state = "paused"
+            time.sleep(10)
+            continue
+        else:
+            if previous_state == "paused":
+                previous_state = "running"
 
         # Attendre qu'une paire soit définie si aucune paire n'est enregistrée
         if not current_pair:
