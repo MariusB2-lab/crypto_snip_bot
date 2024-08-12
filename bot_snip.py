@@ -1,3 +1,4 @@
+import json
 import logging
 import ccxt
 import requests
@@ -5,43 +6,30 @@ import time
 from datetime import datetime
 import threading
 from config import exchange_auth, bot_token, bot_chatID
-import json
 import os
-import decimal
 from functools import wraps
-
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
+import signal
+import sys
 
 # Initialiser la variable de la paire à trader
-current_pair = 'POPCATUSDT'
+current_pair = ''
 
-# Fonction pour le changement de paire via Telegram
-def change_pair(update: Update, context: CallbackContext):
-    global current_pair
-    if context.args:
-        new_pair = context.args[0].upper().replace('-', '')  # Retirer les tirets pour MEXC
-        logging.info(f"Changement de la paire à trader : {current_pair} -> {new_pair}")
-        current_pair = new_pair
-        update.message.reply_text(f"Paire changee en {new_pair}")
-        telegram_send(f"Paire changee en {new_pair}")
-    else:
-        update.message.reply_text("Veuillez spécifier la nouvelle paire, par exemple : /change_pair ETH/USDT")
-
-# Initialisation du bot Telegram
-def start_bot():
-    updater = Updater(token=bot_token, use_context=True)
-    dispatcher = updater.dispatcher
-    dispatcher.add_handler(CommandHandler('change_pair', change_pair))
-    updater.start_polling()
+# Fichier pour sauvegarder l'etat de la position ouverte
+open_position_file = 'open_position.json'
 
 # Configuration du logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Fonction pour envoyer des messages via Telegram
+# Variable pour stocker le dernier message Telegram envoyé
+last_telegram_message = None
+
+# Fonction pour envoyer des messages via Telegram avec vérification de répétition
 def telegram_send(message):
-    send_text = f'https://api.telegram.org/bot{bot_token}/sendMessage?chat_id={bot_chatID}&parse_mode=Markdown&text={message}'
-    threading.Thread(target=requests.get, args=(send_text,)).start()
+    global last_telegram_message
+    if message != last_telegram_message:
+        send_text = f'https://api.telegram.org/bot{bot_token}/sendMessage?chat_id={bot_chatID}&parse_mode=Markdown&text={message}'
+        threading.Thread(target=requests.get, args=(send_text,)).start()
+        last_telegram_message = message
 
 def retry(exceptions, tries=5, delay=3, backoff=2):
     def deco_retry(f):
@@ -67,7 +55,7 @@ def authentication_required(fn):
             message = "You must be authenticated to use this method"
             logging.error(message)
             telegram_send(message)
-            exit()
+            sys.exit(1)
         return fn(self, *args, **kwargs)
     return wrapped
 
@@ -82,7 +70,6 @@ class SpotExchange():
                 "secret": secret,
             }) if self._auth else getattr(ccxt, exchange_name)()
             self.market = self._session.load_markets()
-
             if exchange_name == "mexc":
                 self._session.options['createMarketBuyOrderRequiresPrice'] = False
 
@@ -101,6 +88,13 @@ class SpotExchange():
             logging.error(f"Erreur lors de la recuperation du prix pour {pair}: {e}")
             return None
 
+    def get_order_book(self, pair):
+        try:
+            return self._session.fetch_order_book(pair)
+        except Exception as e:
+            logging.error(f"Erreur lors de la recuperation de l'order book pour {pair}: {e}")
+            return None
+
     def convert_amount_to_precision(self, symbol, amount):
         return self._session.amount_to_precision(symbol, amount)
 
@@ -113,7 +107,7 @@ class SpotExchange():
             usdt_balance = balance['free'].get('USDT', 0)
             return float(usdt_balance)
         except Exception as e:
-            logging.error(f"Erreur lors de la récupération du solde: {e}")
+            logging.error(f"Erreur lors de la recuperation du solde: {e}")
             return 0.0
 
     def get_minimum_trade_amount(self, symbol):
@@ -121,8 +115,8 @@ class SpotExchange():
             market = self._session.market(symbol)
             return market['limits']['amount']['min']
         except Exception as e:
-            logging.error(f"Erreur lors de la récupération du montant minimum pour {symbol}: {e}")
-            return 0.0  # Retourne 0.0 au lieu de None en cas d'erreur
+            logging.error(f"Erreur lors de la recuperation du montant minimum pour {symbol}: {e}")
+            return 0.0
 
     @authentication_required
     def place_order(self, symbol, side, quantity, price):
@@ -132,117 +126,55 @@ class SpotExchange():
         try:
             order = self._session.create_order(symbol, 'limit', side, quantity, price)
             logging.info(f"Order response: {order}")
+            order_id = order['id']
+            
+            # Verifier l'etat de l'ordre
+            while True:
+                order_status = self._session.fetch_order(order_id, symbol)
+                if order_status['status'] == 'closed':
+                    logging.info(f"Order {order_id} for {symbol} has been executed.")
+                    break
+                logging.info(f"Order {order_id} for {symbol} is still open. Waiting...")
+                time.sleep(5)
+
             return order
         except ccxt.InsufficientFunds as e:
             logging.error(f"Fonds insuffisants pour {side} {quantity} {symbol}: {e}")
             telegram_send(f"Fonds insuffisants pour {side} {quantity} {symbol}: {e}")
         except ccxt.ExchangeError as e:
-            logging.error(f"Erreur d'échange lors du placement de l'ordre marché pour {symbol}: {e}")
-            telegram_send(f"Erreur d'échange lors du placement de l'ordre marché pour {symbol}: {e}")
+            logging.error(f"Erreur d'echange lors du placement de l'ordre marche pour {symbol}: {e}")
+            telegram_send(f"Erreur d'echange lors du placement de l'ordre marche pour {symbol}: {e}")
         except ValueError as e:
-            logging.error(f"Erreur de valeur pour l'ordre marché: {e}")
-            telegram_send(f"Erreur de valeur pour l'ordre marché: {e}")
+            logging.error(f"Erreur de valeur pour l'ordre marche: {e}")
+            telegram_send(f"Erreur de valeur pour l'ordre marche: {e}")
         except Exception as e:
-            logging.error(f"Erreur inattendue lors du placement de l'ordre marché pour {symbol}: {e}")
-            telegram_send(f"Erreur inattendue lors du placement de l'ordre marché pour {symbol}: {e}")
+            logging.error(f"Erreur inattendue lors du placement de l'ordre marche pour {symbol}: {e}")
+            telegram_send(f"Erreur inattendue lors du placement de l'ordre marche pour {symbol}: {e}")
         return None
 
-def get_symbols(exchange_name):
-    try:
-        if exchange_name == "mexc":
-            url = 'https://api.mexc.com/api/v3/exchangeInfo'
-        elif exchange_name == "kucoin":
-            url = 'https://api.kucoin.com/api/v1/symbols'
-        else:
-            logging.error("Erreur: echange non supporte.")
-            return []
+def save_open_position(symbol, buy_price, quantity):
+    with open(open_position_file, 'w') as f:
+        json.dump({'symbol': symbol, 'buy_price': buy_price, 'quantity': quantity}, f)
+    logging.info(f"Position ouverte sauvegardee: {symbol} à {buy_price} USDT pour {quantity} unites.")
 
-        response = requests.get(url)
-        
-        if response.status_code != 200:
-            logging.error(f"Erreur de connexion: {response.status_code} - {response.text}")
-            return []
-
-        try:
-            response_json = response.json()
-        except ValueError as e:
-            logging.error(f"Erreur lors de l'analyse de la reponse JSON: {e}, Reponse brute: {response.text}")
-            return []
-
-        if not hasattr(get_symbols, "logged_success"):
-            logging.info("Reponse de l'API recuperee avec succès.")
-            get_symbols.logged_success = True
-
-        if exchange_name == "mexc" and 'symbols' in response_json:
-            return [pair['symbol'].replace('-', '') for pair in response_json['symbols'] if 'USDT' in pair['symbol']]
-        elif 'data' in response_json:
-            return [pair['symbol'] for pair in response_json['data'] if pair.get('enableTrading', True) and 'USDT' in pair['symbol']]
-        else:
-            logging.error("Erreur: 'data' ou 'symbols' non trouve dans la reponse de l'API ou mauvaise structure de la reponse.")
-            return []
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Erreur de connexion lors de la recuperation des symboles: {e}")
-        return []
-    except Exception as e:
-        logging.error(f"Erreur inattendue: {e}")
-        return []
-
-# Fonction pour charger les paires tradees depuis un fichier JSON
-def load_traded_pairs(file_path):
-    if os.path.exists(file_path):
-        with open(file_path, 'r') as f:
-            return set(json.load(f))
-    return set()
-
-# Fonction pour sauvegarder les paires tradees dans un fichier JSON
-def save_traded_pairs(file_path, traded_pairs):
-    with open(file_path, 'w') as f:
-        json.dump(list(traded_pairs), f)
-    logging.info(f"Les paires tradees ont ete sauvegardees dans {file_path}: {traded_pairs}")
-
-# Fonction pour charger les symboles depuis un fichier JSON
-def load_symbols(file_path):
-    if os.path.exists(file_path):
-        with open(file_path, 'r') as f:
+def load_open_position():
+    if os.path.exists(open_position_file) and os.path.getsize(open_position_file) > 0:
+        with open(open_position_file, 'r') as f:
             return json.load(f)
-    return []
-
-# Fonction pour sauvegarder les symboles dans un fichier JSON
-def save_symbols(file_path, symbols):
-    with open(file_path, 'w') as f:
-        json.dump(symbols, f)
-    logging.info(f"Les symboles ont ete sauvegardes dans {file_path}: {symbols}")
-
-def get_current_price(perp_symbol, exchange_name):
-    try:
-        url = ""
-        if exchange_name == "mexc":
-            url = f"https://api.mexc.com/api/v3/ticker/price?symbol={perp_symbol.replace('/', '')}"
-        elif exchange_name == "kucoin":
-            url = f"https://api.kucoin.com/api/v1/prices?symbol={perp_symbol.replace('/', '-')}"
-        else:
-            return exchange.fetch_ticker(perp_symbol)['last']  # Assurez-vous que cette méthode existe et est correcte
-
-        response = requests.get(url)
-        response.raise_for_status()  # Cela lèvera une exception si le code de statut HTTP n'est pas 200
-        data = response.json()
-        price = float(data.get("price") if exchange_name == "mexc" else data["data"].get(perp_symbol.replace('/', '-')))
-        return price
-    except requests.exceptions.HTTPError as e:
-        logging.error(f"Erreur HTTP lors de la récupération du prix pour {perp_symbol}: {e}")
-    except ValueError as e:
-        logging.error(f"Erreur lors de l'analyse de la réponse JSON pour {perp_symbol}: {e}")
-    except KeyError as e:
-        logging.error(f"Clé manquante dans la réponse JSON pour {perp_symbol}: {e}")
     return None
 
-def get_balance(exchange):
-    try:
-        balance_data = exchange.fetch_balance()['total']
-        return float(balance_data.get('USDT', 0))
-    except Exception as e:
-        logging.error(f"Erreur lors de la recuperation du solde: {e}")
-        return 0.0
+def clear_open_position():
+    if os.path.exists(open_position_file):
+        os.remove(open_position_file)
+    logging.info("Position ouverte efface.")
+
+def get_second_bid_ask(exchange, symbol):
+    order_book = exchange.get_order_book(symbol)
+    if order_book:
+        second_bid = order_book['bids'][1][0] if len(order_book['bids']) > 1 else None
+        second_ask = order_book['asks'][1][0] if len(order_book['asks']) > 1 else None
+        return second_bid, second_ask
+    return None, None
 
 def trailing_stop(symbol, exchange, buy_price, quantity):
     ath = exchange.get_price(symbol)
@@ -250,6 +182,8 @@ def trailing_stop(symbol, exchange, buy_price, quantity):
         return
 
     trailing_stop_value = ath * 0.99
+    logging.info(f"Trailing stop initialisé à {trailing_stop_value} USDT pour {symbol}")
+
     while True:
         close_price = exchange.get_price(symbol)
         if close_price is None:
@@ -258,21 +192,24 @@ def trailing_stop(symbol, exchange, buy_price, quantity):
         if close_price > ath:
             ath = close_price
             trailing_stop_value = ath * 0.99
+            logging.info(f"Nouveau ATH: {ath} USDT, Trailing stop ajusté à {trailing_stop_value} USDT pour {symbol}")
             
         if close_price < trailing_stop_value:
-            logging.info(f"Close : {close_price} ATH : {ath} Trailing_stop : {trailing_stop_value} Executed")
+            logging.info(f"Close: {close_price} ATH: {ath} Trailing_stop: {trailing_stop_value} Executed")
             exchange.place_order(symbol, 'sell', quantity, close_price)
+            clear_open_position()
             break
 
         price_change_percent = ((close_price - buy_price) / buy_price) * 100
+        usdt_change = (close_price - buy_price) * quantity
 
         if price_change_percent >= 0:
-            variation_message = f"Gain de {price_change_percent:.2f}%"
+            variation_message = f"Gain de {price_change_percent:.2f}% ({usdt_change:.2f} USDT)"
         else:
-            variation_message = f"Perte de {price_change_percent:.2f}%"
+            variation_message = f"Perte de {price_change_percent:.2f}% ({usdt_change:.2f} USDT)"
 
-        logging.info(f"Close : {close_price} ATH : {ath} Trailing_stop : {trailing_stop_value} | {variation_message}")
-        telegram_send(f"📈 Close : {close_price} ATH : {ath} Trailing_stop : {trailing_stop_value} | {variation_message}")
+        logging.info(f"Close: {close_price} ATH: {ath} Trailing_stop: {trailing_stop_value} | {variation_message}")
+        telegram_send(f"📈 Close: {close_price} ATH: {ath} Trailing_stop: {trailing_stop_value} | {variation_message}")
         
         time.sleep(1)
 
@@ -281,8 +218,16 @@ def is_symbol_supported(symbol, exchange_name):
         symbols = get_symbols(exchange_name)
         return symbol in symbols
     except Exception as e:
-        logging.error(f"Erreur lors de la vérification du symbole supporté: {e}")
+        logging.error(f"Erreur lors de la verification du symbole supporte: {e}")
         return False
+
+def get_symbols(exchange_name):
+    try:
+        exchange = getattr(ccxt, exchange_name)()
+        return exchange.load_markets().keys()
+    except Exception as e:
+        logging.error(f"Erreur lors de la recuperation des symboles pour {exchange_name}: {e}")
+        return []
 
 # Verifier si le fichier traded_pairs.json existe, sinon le creer
 traded_pairs_file = 'traded_pairs.json'
@@ -291,11 +236,38 @@ if not os.path.exists(traded_pairs_file):
         json.dump([], f)
 
 # Charger les paires tradees
+def load_traded_pairs(file_path):
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as f:
+            return json.load(f)
+    return []
+
 traded_pairs = load_traded_pairs(traded_pairs_file)
+
+# Ensemble pour stocker les paires déjà tradées dans cette session
+traded_pairs_session = set(traded_pairs)
 
 # Choix de l'echange
 exchange_name = "mexc"
+def load_symbols(file_path):
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        with open(file_path, 'r') as f:
+            return json.load(f)
+    return []
+
 symbols_file = 'symbols.json'
+def save_symbols(file_path, symbols):
+    with open(file_path, 'w') as f:
+        json.dump(list(symbols), f)
+    logging.info(f"Symboles sauvegardés dans {file_path}")
+
+symbols = get_symbols(exchange_name)
+save_symbols(symbols_file, symbols)
+symbols = load_symbols(symbols_file)
+
+if not symbols:
+    symbols = get_symbols(exchange_name)
+    save_symbols(symbols_file, symbols)
 symbols = load_symbols(symbols_file)
 
 if not symbols:
@@ -306,78 +278,147 @@ dry_run_mode = False
 exchange = SpotExchange(exchange_name, **exchange_auth, dry_run=dry_run_mode)
 logging.info(f"Symboles recuperes : {symbols}")
 
-# Démarrer le bot Telegram
-threading.Thread(target=start_bot, daemon=True).start()
+# Charger la position ouverte si elle existe
+open_position = load_open_position()
+if open_position:
+    logging.info(f"Reprise de la position ouverte: {open_position['symbol']} à {open_position['buy_price']} USDT pour {open_position['quantity']} unités.")
+    trailing_stop(open_position['symbol'], exchange, open_position['buy_price'], open_position['quantity'])
 
+def save_traded_pairs(file_path, traded_pairs):
+    with open(file_path, 'w') as f:
+        json.dump(list(traded_pairs), f)
+    logging.info(f"Paires tradees sauvegardees dans {file_path}")
+
+# Fonction pour écouter les messages Telegram
+def listen_telegram():
+    url = f'https://api.telegram.org/bot{bot_token}/getUpdates'
+    response = requests.get(url)
+    if response.status_code == 200:
+        messages = response.json().get('result', [])
+        if messages:
+            last_message = messages[-1]
+            message_text = last_message['message']['text']
+            return message_text
+    return None
+
+# Fonction pour traiter les commandes Telegram
+def process_telegram_commands():
+    global current_pair, can_send_bid_ask_error
+    new_pair = listen_telegram()
+    if new_pair and new_pair.startswith("/change_paire"):
+        parts = new_pair.split()
+        if len(parts) == 2:
+            _, new_pair_value = parts
+            if not open_position:
+                current_pair = new_pair_value
+                logging.info(f"Paire changée à {current_pair} via Telegram.")
+                telegram_send(f"Paire changée à {current_pair} via Telegram.")
+                can_send_bid_ask_error = True  # Réactiver l'envoi des messages d'erreur
+            else:
+                logging.info("Impossible de changer la paire, un trade est en cours.")
+                telegram_send("Impossible de changer la paire, un trade est en cours.")
+        else:
+            logging.error("Commande /change_paire mal formée. Format attendu: /change_paire <paire>")
+            telegram_send("Commande /change_paire mal formée. Format attendu: /change_paire <paire>")
+
+# Ajouter une variable pour contrôler l'envoi des messages d'erreur
+can_send_bid_ask_error = True
+
+# Boucle principale optimisée
 while True:
     try:
-        perp_list_base = get_symbols(exchange_name)
-        if current_pair in perp_list_base:
-            logging.info(f"{str(datetime.now()).split('.')[0]} | Tentative de sniping sur {current_pair}")
-            current_price = get_current_price(current_pair, exchange_name)
-            if current_price is None or current_price == 0:
-                logging.info(f"{str(datetime.now()).split('.')[0]} | {current_pair} n'est pas disponible ou le prix est zéro. Attente que la paire soit listée.")
-                telegram_send(f"{str(datetime.now()).split('.')[0]} | {current_pair} n'est pas disponible ou le prix est zéro. Attente que la paire soit listée.")
-                time.sleep(200)
+        # Traiter les commandes Telegram
+        process_telegram_commands()
+
+        # Attendre qu'une paire soit définie si aucune paire n'est enregistrée
+        if not current_pair:
+            logging.info("Aucune paire définie. En attente d'une paire via Telegram...")
+            telegram_send("Aucune paire définie. Veuillez envoyer une paire via la commande /change_paire.")
+            time.sleep(10)
+            continue
+
+        if current_pair in symbols:
+            if current_pair in traded_pairs_session:
+                logging.info(f"{str(datetime.now()).split('.')[0]} | {current_pair} a déjà été tradée. Ignorer cette paire.")
+                # Effacer la paire actuelle et attendre une nouvelle commande
+                current_pair = ''
+                logging.info("Paire actuelle effacée. En attente d'une nouvelle paire via Telegram...")
+                telegram_send("Paire actuelle effacée. Veuillez envoyer une nouvelle paire via la commande /change_paire.")
+                time.sleep(10)  # Réduire le temps d'attente à 10 secondes
                 continue
 
-            usdt_amount = 12  # Montant fixe en USDT pour l'achat
+            logging.info(f"{str(datetime.now()).split('.')[0]} | Tentative de sniping sur {current_pair}")
+            second_bid, second_ask = get_second_bid_ask(exchange, current_pair)
+            if second_bid is None or second_ask is None:
+                if can_send_bid_ask_error:
+                    error_message = f"{str(datetime.now()).split('.')[0]} | Impossible d'obtenir le deuxième bid/ask pour {current_pair}."
+                    logging.info(error_message)
+                    #telegram_send(error_message)
+                    can_send_bid_ask_error = False  # Désactiver l'envoi jusqu'à la prochaine commande
+                time.sleep(10)  # Réduire le temps d'attente à 10 secondes
+                continue
+
+            usdt_amount = 12
             usdt_balance = exchange.get_balance()
             
             if usdt_amount > usdt_balance:
-                logging.warning(f"Le montant d'achat ({usdt_amount} USDT) est supérieur au solde disponible ({usdt_balance} USDT). Ajustement du montant d'achat.")
-                usdt_amount = usdt_balance * 0.95  # Utilise 95% du solde disponible
+                logging.warning(f"Le montant d'achat ({usdt_amount} USDT) est superieur au solde disponible ({usdt_balance} USDT). Ajustement du montant d'achat.")
+                usdt_amount = usdt_balance * 0.95
 
-            current_price = float(current_price)  # Assurez-vous que current_price est un float
-            quantity = usdt_amount / current_price
-            quantity = float(exchange.convert_amount_to_precision(current_pair, quantity))  # Assurez-vous que quantity est un float
+            quantity = usdt_amount / second_ask
+            quantity = float(exchange.convert_amount_to_precision(current_pair, quantity))
 
-            # Ajuster le montant pour tenir compte des frais de transaction
-            fee_percentage = 0.001  # Exemple de frais de 0.1%
+            fee_percentage = 0.001
             adjusted_quantity = quantity * (1 - fee_percentage)
-            adjusted_cost = adjusted_quantity * current_price
+            adjusted_cost = adjusted_quantity * second_ask
 
             if adjusted_cost > usdt_balance:
-                logging.error(f"Solde insuffisant pour acheter {adjusted_quantity} {current_pair} au prix actuel de {current_price}. Coût ajusté : {adjusted_cost} USDT. Solde disponible : {usdt_balance} USDT.")
-                telegram_send(f"Solde insuffisant pour acheter {adjusted_quantity} {current_pair} au prix actuel de {current_price}. Coût ajusté : {adjusted_cost} USDT. Solde disponible : {usdt_balance} USDT.")
+                logging.error(f"Solde insuffisant pour acheter {adjusted_quantity} {current_pair} au prix actuel de {second_ask}. Coût ajuste : {adjusted_cost} USDT. Solde disponible : {usdt_balance} USDT.")
+                telegram_send(f"Solde insuffisant pour acheter {adjusted_quantity} {current_pair} au prix actuel de {second_ask}. Coût ajuste : {adjusted_cost} USDT. Solde disponible : {usdt_balance} USDT.")
                 continue
 
             exchange.reload_markets()
 
             try:
                 if is_symbol_supported(current_pair, exchange_name):
-                    order_response = exchange.place_order(current_pair, "buy", adjusted_quantity, current_price)
-                    purchase_price = current_price
+                    order_response = exchange.place_order(current_pair, "buy", adjusted_quantity, second_ask)
+                    purchase_price = second_ask
                     logging.info(f"{str(datetime.now()).split('.')[0]} | Buy {current_pair} Order success at price: {purchase_price} USDT!")
                     telegram_send(f"{str(datetime.now()).split('.')[0]} |✅ Buy {current_pair} Order success at price: {purchase_price} USDT!")
+
+                    save_open_position(current_pair, purchase_price, adjusted_quantity)
 
                     logging.info(f"{str(datetime.now()).split('.')[0]} | Waiting for sell...")
                     telegram_send(f"⌛ Waiting for sell...")
 
                     trailing_stop(current_pair, exchange, purchase_price, adjusted_quantity)
 
-                    sell_price = exchange.get_price(current_pair)
+                    sell_price = second_bid
                     profit_percentage = ((sell_price - purchase_price) / purchase_price) * 100 if purchase_price else 0
+                    profit_usdt = (sell_price - purchase_price) * adjusted_quantity
 
                     exchange.place_order(current_pair, "sell", adjusted_quantity, sell_price)
-                    logging.info(f"{str(datetime.now()).split('.')[0]} | Sell {current_pair} Order success at price: {sell_price} USDT! Profit: {profit_percentage:.2f}%")
-                    telegram_send(f"{str(datetime.now()).split('.')[0]} |✅ 💯 Sell {current_pair} Order success at price: {sell_price} USDT! Profit: {profit_percentage:.2f}%")
+                    logging.info(f"{str(datetime.now()).split('.')[0]} | Sell {current_pair} Order success at price: {sell_price} USDT! Profit: {profit_percentage:.2f}% ({profit_usdt:.2f} USDT)")
+                    telegram_send(f"{str(datetime.now()).split('.')[0]} |✅ 💯 Sell {current_pair} Order success at price: {sell_price} USDT! Profit: {profit_percentage:.2f}% ({profit_usdt:.2f} USDT)")
 
-                    traded_pairs.add(current_pair)
+                    clear_open_position()
+
+                    traded_pairs_session.add(current_pair)
+                    traded_pairs.append(current_pair)
                     save_traded_pairs(traded_pairs_file, traded_pairs)
                 else:
-                    logging.error(f"Le symbole {current_pair} n'est pas supporté par l'API de l'échange {exchange_name}.")
-                    telegram_send(f"Le symbole {current_pair} n'est pas supporté par l'API de l'échange {exchange_name}.")
+                    logging.error(f"Le symbole {current_pair} n'est pas supporte par l'API de l'echange {exchange_name}.")
+                    telegram_send(f"Le symbole {current_pair} n'est pas supporte par l'API de l'echange {exchange_name}.")
             except ccxt.ExchangeError as e:
-                logging.error(f"Erreur d'échange lors du placement de l'ordre marché pour {current_pair}: {e}")
-                telegram_send(f"Erreur d'échange lors du placement de l'ordre marché pour {current_pair}: {e}")
+                logging.error(f"Erreur d'echange lors du placement de l'ordre marche pour {current_pair}: {e}")
+                telegram_send(f"Erreur d'echange lors du placement de l'ordre marche pour {current_pair}: {e}")
             except Exception as e:
                 logging.error(f"Erreur inattendue lors de la transaction pour {current_pair}: {e}")
                 telegram_send(f"Erreur inattendue lors de la transaction pour {current_pair}: {e}")
         else:
-            logging.info(f"{str(datetime.now()).split('.')[0]} | {current_pair} n'est pas dans la liste des symboles ou a déjà ete trade.")
-            logging.info(f"{str(datetime.now()).split('.')[0]} | Attente de 200 secondes pour que la paire soit listee.")
-            time.sleep(200)
+            logging.info(f"{str(datetime.now()).split('.')[0]} | {current_pair} n'est pas dans la liste des symboles ou a déjà été tradée.")
+            logging.info(f"{str(datetime.now()).split('.')[0]} | Attente de 10 secondes pour que la paire soit listée.")
+            time.sleep(10)  # Réduire le temps d'attente à 10 secondes
     except Exception as e:
         logging.error(f"Erreur dans la boucle principale: {e}")
         time.sleep(5)
