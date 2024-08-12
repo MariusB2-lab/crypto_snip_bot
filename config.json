@@ -1,0 +1,12 @@
+{
+    "usdt_amount": 12,
+    "fee_percentage": 0.001,
+    "telegram_poll_interval": 10,
+    "main_loop_interval": 10,
+    "exchange_auth": {
+        "apiKey": "votre_api_key",
+        "secret": "votre_secret"
+    },
+    "bot_token": "votre_bot_token",
+    "bot_chatID": "votre_chat_id"
+}
