@@ -16,6 +16,7 @@ with open('config.json', 'r') as f:
 exchange_auth = config['exchange_auth']
 bot_token = config['bot_token']
 bot_chatID = config['bot_chatID']
+usdt_amount = config['usdt_amount']  # Ajouter cette ligne pour récupérer usdt_amount
 
 # Initialiser la variable de la paire à trader
 current_pair = ''
@@ -412,6 +413,15 @@ def change_pair(new_pair_value):
 # Ajouter une variable pour contrôler l'envoi des messages d'erreur
 can_send_bid_ask_error = True
 
+def get_current_price(pair, exchange_name):
+    try:
+        exchange = getattr(ccxt, exchange_name)()
+        ticker = exchange.fetch_ticker(pair)
+        return ticker['last']
+    except Exception as e:
+        logging.error(f"Erreur lors de la récupération du prix actuel pour {pair}: {e}")
+        return None
+
 # Boucle principale optimisée
 while True:
     try:
@@ -447,41 +457,37 @@ while True:
                 continue
 
             logging.info(f"{str(datetime.now()).split('.')[0]} | Tentative de sniping sur {current_pair}")
-            second_bid, second_ask = get_second_bid_ask(exchange, current_pair)
-            if second_bid is None or second_ask is None:
-                if can_send_bid_ask_error:
-                    error_message = f"{str(datetime.now()).split('.')[0]} | Impossible d'obtenir le deuxième bid/ask pour {current_pair}."
-                    logging.info(error_message)
-                    #telegram_send(error_message)
-                    can_send_bid_ask_error = False  # Désactiver l'envoi jusqu'à la prochaine commande
-                time.sleep(10)  # Réduire le temps d'attente à 10 secondes
+            current_price = get_current_price(current_pair, exchange_name)  # Utiliser le prix actuel
+            if current_price is None or current_price == 0:
+                logging.info(f"{str(datetime.now()).split('.')[0]} | {current_pair} n'est pas disponible ou le prix est zéro. Attente que la paire soit listée.")
+                telegram_send(f"{str(datetime.now()).split('.')[0]} | {current_pair} n'est pas disponible ou le prix est zéro. Attente que la paire soit listée.")
+                time.sleep(10)
                 continue
 
-            usdt_amount = 12
             usdt_balance = exchange.get_balance()
             
             if usdt_amount > usdt_balance:
                 logging.warning(f"Le montant d'achat ({usdt_amount} USDT) est superieur au solde disponible ({usdt_balance} USDT). Ajustement du montant d'achat.")
                 usdt_amount = usdt_balance * 0.95
 
-            quantity = usdt_amount / second_ask
+            quantity = usdt_amount / current_price  # Utiliser le prix actuel
             quantity = float(exchange.convert_amount_to_precision(current_pair, quantity))
 
             fee_percentage = 0.001
             adjusted_quantity = quantity * (1 - fee_percentage)
-            adjusted_cost = adjusted_quantity * second_ask
+            adjusted_cost = adjusted_quantity * current_price  # Utiliser le prix actuel
 
             if adjusted_cost > usdt_balance:
-                logging.error(f"Solde insuffisant pour acheter {adjusted_quantity} {current_pair} au prix actuel de {second_ask}. Coût ajuste : {adjusted_cost} USDT. Solde disponible : {usdt_balance} USDT.")
-                telegram_send(f"Solde insuffisant pour acheter {adjusted_quantity} {current_pair} au prix actuel de {second_ask}. Coût ajuste : {adjusted_cost} USDT. Solde disponible : {usdt_balance} USDT.")
+                logging.error(f"Solde insuffisant pour acheter {adjusted_quantity} {current_pair} au prix actuel de {current_price}. Coût ajuste : {adjusted_cost} USDT. Solde disponible : {usdt_balance} USDT.")
+                telegram_send(f"Solde insuffisant pour acheter {adjusted_quantity} {current_pair} au prix actuel de {current_price}. Coût ajuste : {adjusted_cost} USDT. Solde disponible : {usdt_balance} USDT.")
                 continue
 
             exchange.reload_markets()
 
             try:
                 if is_symbol_supported(current_pair, exchange_name):
-                    order_response = exchange.place_order(current_pair, "buy", adjusted_quantity, second_ask)
-                    purchase_price = second_ask
+                    order_response = exchange.place_order(current_pair, "buy", adjusted_quantity, current_price)  # Utiliser le prix actuel
+                    purchase_price = current_price  # Utiliser le prix actuel
                     logging.info(f"{str(datetime.now()).split('.')[0]} | Buy {current_pair} Order success at price: {purchase_price} USDT!")
                     telegram_send(f"{str(datetime.now()).split('.')[0]} |✅ Buy {current_pair} Order success at price: {purchase_price} USDT!")
 
@@ -492,7 +498,7 @@ while True:
 
                     trailing_stop(current_pair, exchange, purchase_price, adjusted_quantity)
 
-                    sell_price = second_bid
+                    sell_price = exchange.get_price(current_pair)  # Utiliser le prix actuel pour la vente
                     profit_percentage = ((sell_price - purchase_price) / purchase_price) * 100 if purchase_price else 0
                     profit_usdt = (sell_price - purchase_price) * adjusted_quantity
 
@@ -517,7 +523,7 @@ while True:
         else:
             logging.info(f"{str(datetime.now()).split('.')[0]} | {current_pair} n'est pas dans la liste des symboles ou a déjà été tradée.")
             logging.info(f"{str(datetime.now()).split('.')[0]} | Attente de 10 secondes pour que la paire soit listée.")
-            time.sleep(10)  # Réduire le temps d'attente à 10 secondes
+            time.sleep(10)
     except Exception as e:
         logging.error(f"Erreur dans la boucle principale: {e}")
         time.sleep(5)
