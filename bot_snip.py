@@ -3,7 +3,7 @@ import logging
 import ccxt
 import requests
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
 import os
 from functools import wraps
@@ -346,31 +346,32 @@ def process_telegram_commands():
     if new_pair:
         if new_pair.startswith("/change_paire"):
             parts = new_pair.split()
-            if len(parts) == 2:
-                _, new_pair_value = parts
-                if not open_position:
-                    if new_pair_value in traded_pairs_session:  # Vérification si la paire a déjà été tradée
-                        logging.info(f"La paire {new_pair_value} a déjà été tradée. Ignorer cette paire.")
-                        return  # Ignorer le message si la paire a déjà été tradée
-                    current_pair = new_pair_value
-                    logging.info(f"Paire changée à {current_pair} via Telegram.")
-                    telegram_send(f"Paire changée à {current_pair} via Telegram.")
-                    last_change_pair_error_sent = False  # Réinitialiser l'état du message d'erreur
-                    
-                    # Vérification si la paire est dans traded_pairs
-                    if current_pair not in traded_pairs:
-                        logging.warning(f"La paire {current_pair} n'est pas dans traded_pairs.")
-                        telegram_send(f"Alerte : La paire {current_pair} n'est pas dans la liste des paires tradées.")
+            if len(parts) == 2 or len(parts) == 3:
+                _, new_pair_value = parts[0:2]
+                change_time = parts[2] if len(parts) == 3 else None
+
+                if change_time:
+                    try:
+                        # Vérifier l'heure actuelle du système
+                        now = datetime.now()
+                        change_time = datetime.strptime(change_time, "%H%M").time()
+                        change_datetime = datetime.combine(now, change_time)
+                        if change_datetime < now:
+                            change_datetime += timedelta(days=1)
+                        delay = (change_datetime - now).total_seconds()
+                        threading.Timer(delay, change_pair, args=(new_pair_value,)).start()
+                        logging.info(f"Paire {new_pair_value} changée programmée pour {change_time}.")
+                        telegram_send(f"Paire {new_pair_value} changée programmée pour {change_time}.")
+                    except ValueError:
+                        logging.error("Format de l'heure incorrect. Utilisez HHMM.")
+                        telegram_send("Format de l'heure incorrect. Utilisez HHMM.")
                 else:
-                    logging.info("Impossible de changer la paire, un trade est en cours.")
-                    if not last_change_pair_error_sent:  # Vérifier si le message a déjà été envoyé
-                        telegram_send("Impossible de changer la paire, un trade est en cours.")
-                        last_change_pair_error_sent = True  # Marquer le message comme envoyé
+                    change_pair(new_pair_value)
             else:
-                logging.error("Commande /change_paire mal formée. Format attendu: /change_paire BTC/USDT")
-                if not last_change_pair_error_sent:  # Vérifier si le message a déjà été envoyé
-                    telegram_send("Commande /change_paire mal formée. Format attendu: /change_paire BTC/USDT")
-                    last_change_pair_error_sent = True  # Marquer le message comme envoyé
+                logging.error("Commande /change_paire mal formée. Format attendu: /change_paire BTC/USDT [HHMM]")
+                if not last_change_pair_error_sent:
+                    telegram_send("Commande /change_paire mal formée. Format attendu: /change_paire BTC/USDT [HHMM]")
+                    last_change_pair_error_sent = True
         elif new_pair == "/pause":
             if not is_paused:  # Vérifier si le bot n'est pas déjà en pause
                 is_paused = True
@@ -388,6 +389,25 @@ def process_telegram_commands():
                 keyboard_sent = False  # Réinitialiser l'état du clavier
         # Envoyer le clavier personnalisé après avoir traité une commande
         send_telegram_keyboard()
+
+def change_pair(new_pair_value):
+    global current_pair, last_change_pair_error_sent
+    if not open_position:
+        if new_pair_value in traded_pairs_session:
+            logging.info(f"La paire {new_pair_value} a déjà été tradée. Ignorer cette paire.")
+            return
+        current_pair = new_pair_value
+        logging.info(f"Paire changée à {current_pair} via Telegram.")
+        telegram_send(f"Paire changée à {current_pair} via Telegram.")
+        last_change_pair_error_sent = False
+        if current_pair not in traded_pairs:
+            logging.warning(f"La paire {current_pair} n'est pas dans traded_pairs.")
+            telegram_send(f"Alerte : La paire {current_pair} n'est pas dans la liste des paires tradées.")
+    else:
+        logging.info("Impossible de changer la paire, un trade est en cours.")
+        if not last_change_pair_error_sent:
+            telegram_send("Impossible de changer la paire, un trade est en cours.")
+            last_change_pair_error_sent = True
 
 # Ajouter une variable pour contrôler l'envoi des messages d'erreur
 can_send_bid_ask_error = True
